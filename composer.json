@@ -1,0 +1,35 @@
+{
+    "name": "clicktrail/psr-middleware",
+    "description": "PSR-15 middleware for ClickTrail attribution: capture UTMs/click IDs from incoming requests, preserve first/last touch, persist only when consent permits, attach context downstream. No remote calls during the request.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "psr/http-server-middleware": "^1.0",
+        "psr/http-server-handler": "^1.0",
+        "psr/http-message": "^2.0",
+        "clicktrail/php-sdk": "dev-main"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../clicktrail-php",
+            "options": {"symlink": true}
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/vizuh/clicktrail-php.git"
+        }
+    ],
+    "autoload": {
+        "psr-4": {"ClickTrail\\": "src/"}
+    },
+    "authors": [
+        {"name": "Vizuh OU", "email": "hugo@vizuh.com"}
+    ],
+    "keywords": ["psr-15", "middleware", "attribution", "utm", "gclid", "consent"],
+    "support": {
+        "issues": "https://github.com/vizuh/clicktrail-psr-middleware/issues",
+        "source": "https://github.com/vizuh/clicktrail-psr-middleware"
+    }
+}
