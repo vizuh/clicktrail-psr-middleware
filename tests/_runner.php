@@ -174,12 +174,15 @@ namespace ClickTrail\Test {
 
 namespace {
     error_reporting(E_ALL);
-    spl_autoload_register(function ($class) {
+    $appRoot = getenv('CLICKTRAIL_APP_ROOT') ?: '/app';
+    $sdkRoot = getenv('CLICKTRAIL_SDK_ROOT') ?: '/sdk';
+
+    spl_autoload_register(function ($class) use ($appRoot, $sdkRoot) {
         $map = [
-            'ClickTrail\\Core\\' => '/sdk/src/Core/',
-            'ClickTrail\\Consent\\' => '/sdk/src/Consent/',
-            'ClickTrail\\Middleware\\' => '/app/src/',
-            'ClickTrail\\' => '/sdk/src/', // Conventions + any other SDK namespaces
+            'ClickTrail\\Core\\' => $sdkRoot . '/src/Core/',
+            'ClickTrail\\Consent\\' => $sdkRoot . '/src/Consent/',
+            'ClickTrail\\Middleware\\' => $appRoot . '/src/',
+            'ClickTrail\\' => $sdkRoot . '/src/', // Conventions + any other SDK namespaces
         ];
         foreach ($map as $prefix => $base) {
             if (str_starts_with($class, $prefix)) {
