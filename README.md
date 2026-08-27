@@ -4,7 +4,9 @@
 
 **clicktrail/psr-middleware**
 
-PSR-15 middleware for ClickTrail attribution in any PSR-7 framework (Slim, Mezzio, Laminas, custom) — deterministic first/last touch on the request, nothing written without consent.
+PSR-15 middleware that carries observed acquisition context into a PSR-7
+request attribute. Persistence occurs only when the injected consent resolver
+permits it.
 
 </div>
 
@@ -25,7 +27,10 @@ PSR-15 middleware for ClickTrail attribution in any PSR-7 framework (Slim, Mezzi
 
 ## Why
 
-Most attribution middleware captures UTMs into a cookie and calls it done — no merge law, no consent gate, storage decisions baked in. This package runs the deterministic ClickTrail core inside your PSR-15 stack and hands your handlers an immutable `AttributionContext`: merged touches, resolved consent, and an audit trail of everything that was suppressed and why. Part of the ClickTrail PHP/Twig expansion (ADR-0001 polyrepo, layer 1).
+Use this package when downstream PSR-15 handlers need the campaign context
+observed on the incoming request. It runs the deterministic ClickTrail core and
+attaches an immutable `AttributionContext` containing merged touches, resolved
+consent, and recorded suppression reasons.
 
 ## Installation
 
@@ -60,20 +65,21 @@ $context->canPersist();       // true only when consent allowed the storage writ
 $context->suppressionReasons; // audit trail of what was blocked and why
 ```
 
-A paid-search hit followed by a direct visit leaves `firstTouch()` unchanged while `lastTouch()` moves — that is the merge law of the shared core, not this package's opinion. Without a consent grant, no store write happens at all.
+A paid-search hit followed by a direct visit leaves `firstTouch()` unchanged while `lastTouch()` moves; that is the merge law of the shared core, not this package's opinion. Without a consent grant, no store write happens at all.
 
 ## Storage adapters
 
 The middleware never decides where state lives. Implement `StateStoreInterface` (session, database, cache) or ship one of the built-ins:
 
-- **`ArrayStore`** — per-request memory. Tests and stateless workers.
-- **`CookieStore`** — cookie-backed persistence, e.g. `new CookieStore('ct_attr')`.
+- **`ArrayStore`**; per-request memory. Tests and stateless workers.
+- **`CookieStore`**; cookie-backed persistence, e.g. `new CookieStore('ct_attr')`.
 
-If the injected `ConsentResolverInterface` returns no grant, `StateStoreInterface::save()` is never called — no cookie, no session entry, nothing.
+If the injected `ConsentResolverInterface` returns no grant, `StateStoreInterface::save()` is never called; no cookie, no session entry, nothing.
 
 ## Consent
 
-A `null` snapshot means *unknown*, which is denied by default per the [consent compatibility contract](../docs/consent-compatibility-plan.md). Two ways to wire it:
+A `null` snapshot means *unknown*, which is denied by default per the
+[shared SDK consent contract](https://github.com/vizuh/clicktrail-php/tree/main/src/Consent). Two ways to wire it:
 
 - Pass a `consentResolver` to `CaptureAttributionMiddleware`; it gates persistence directly.
 - Add `ConsentMiddleware` upstream; it resolves the snapshot once per request and attaches it under its own attribute (`clicktrail.consent`) for anything else downstream.
@@ -97,7 +103,7 @@ Snapshots travel with the lead, so months later the conversion worker knows exac
 
 | Typical tracking middleware | clicktrail/psr-middleware |
 |---|---|
-| Makes remote calls during the request cycle | No remote calls, ever — event delivery belongs to `clicktrail/php-sdk` |
+| Makes remote calls during the request cycle | No remote calls, ever; event delivery belongs to `clicktrail/php-sdk` |
 | Reads wall-clock time itself | Injected clock callable returning ISO-8601 millisecond timestamps |
 | Writes cookies, then asks about consent | No grant → no `save()` call → no write |
 | Bundles its own storage backend | Storage belongs to the adapter: bring `StateStoreInterface`, or use `ArrayStore` / `CookieStore` |

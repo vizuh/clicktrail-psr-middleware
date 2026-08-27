@@ -4,7 +4,9 @@
 
 **clicktrail/psr-middleware**
 
-PSR-15-Middleware für ClickTrail-Attribution in jedem PSR-7-Framework (Slim, Mezzio, Laminas, custom) — deterministischer First-/Last-Touch auf dem Request, nichts wird ohne Consent geschrieben.
+PSR-15-Middleware, die beobachteten Akquisitionskontext als Attribut an einen
+PSR-7-Request hängt. Persistiert wird nur, wenn der injizierte Consent-Resolver
+es erlaubt.
 
 </div>
 
@@ -25,7 +27,11 @@ PSR-15-Middleware für ClickTrail-Attribution in jedem PSR-7-Framework (Slim, Me
 
 ## Warum
 
-Die meiste Attributions-Middleware schreibt UTMs in ein Cookie und ist fertig — keine Merge-Regel, kein Consent-Gate, Storage-Entscheidungen fest verdrahtet. Dieses Paket führt den deterministischen ClickTrail-Core in Ihrem PSR-15-Stack aus und übergibt Ihren Handlern einen unveränderlichen `AttributionContext`: gemergte Touches, aufgelöstes Consent und eine Audit-Trail alles dessen, was unterdrückt wurde und warum. Teil der ClickTrail-PHP/Twig-Erweiterung (ADR-0001-Polyrepo, Layer 1).
+Verwenden Sie dieses Paket, wenn nachgelagerte PSR-15-Handler den im
+eingehenden Request beobachteten Kampagnenkontext benötigen. Es führt den
+deterministischen ClickTrail-Core aus und hängt einen unveränderlichen
+`AttributionContext` mit zusammengeführten Touches, aufgelöstem Consent und
+protokollierten Unterdrückungsgründen an.
 
 ## Installation
 
@@ -60,20 +66,22 @@ $context->canPersist();       // true nur wenn Consent den Storage-Write erlaubt
 $context->suppressionReasons; // Audit-Trail dessen, was blockiert wurde und warum
 ```
 
-Ein Paid-Search-Hit gefolgt von einem Direktbesuch lässt `firstTouch()` unverändert, während `lastTouch()` wandert — das ist die Merge-Regel des gemeinsamen Cores, nicht die Meinung dieses Pakets. Ohne Consent-Grant findet überhaupt kein Store-Write statt.
+Ein Paid-Search-Hit gefolgt von einem Direktbesuch lässt `firstTouch()` unverändert, während `lastTouch()` wandert; das ist die Merge-Regel des gemeinsamen Cores, nicht die Meinung dieses Pakets. Ohne Consent-Grant findet überhaupt kein Store-Write statt.
 
 ## Storage-Adapter
 
 Die Middleware entscheidet nie, wo der State lebt. Implementieren Sie `StateStoreInterface` (Session, Datenbank, Cache) oder nutzen Sie einen der Built-ins:
 
-- **`ArrayStore`** — Memory pro Request. Tests und zustandslose Worker.
-- **`CookieStore`** — Cookie-basierte Persistenz, z. B. `new CookieStore('ct_attr')`.
+- **`ArrayStore`**; Memory pro Request. Tests und zustandslose Worker.
+- **`CookieStore`**; Cookie-basierte Persistenz, z. B. `new CookieStore('ct_attr')`.
 
-Liefert der injizierte `ConsentResolverInterface` keinen Grant, wird `StateStoreInterface::save()` nie aufgerufen — kein Cookie, kein Session-Eintrag, nichts.
+Liefert der injizierte `ConsentResolverInterface` keinen Grant, wird `StateStoreInterface::save()` nie aufgerufen; kein Cookie, kein Session-Eintrag, nichts.
 
 ## Consent
 
-Ein `null`-Snapshot bedeutet *unbekannt* und wird standardmäßig verweigert gemäß dem [Consent-Kompatibilitätsvertrag](../docs/consent-compatibility-plan.md). Zwei Wege zur Verdrahtung:
+Ein `null`-Snapshot bedeutet *unbekannt* und wird gemäß dem
+[Consent-Vertrag des gemeinsamen SDK](https://github.com/vizuh/clicktrail-php/tree/main/src/Consent) standardmäßig verweigert. Zwei
+Wege zur Verdrahtung:
 
 - Übergeben Sie einen `consentResolver` an `CaptureAttributionMiddleware`; er gatet die Persistenz direkt.
 - Ergänzen Sie `ConsentMiddleware` upstream; er löst den Snapshot einmal pro Request auf und hängt ihn unter seinem eigenen Attribut (`clicktrail.consent`) für alles Weitere downstream an.
@@ -97,7 +105,7 @@ Snapshots reisen mit dem Lead, sodass der Conversion-Worker Monate später genau
 
 | Typische Tracking-Middleware | clicktrail/psr-middleware |
 |---|---|
-| Macht Remote-Aufrufe im Request-Zyklus | Keine Remote-Aufrufe, niemals — Event-Delivery gehört zu `clicktrail/php-sdk` |
+| Macht Remote-Aufrufe im Request-Zyklus | Keine Remote-Aufrufe, niemals; Event-Delivery gehört zu `clicktrail/php-sdk` |
 | Liest selbst die Wanduhr | Injizierbare Clock-Callable mit ISO-8601-Millisekunden-Timestamps |
 | Schreibt Cookies und fragt dann nach Consent | Kein Grant → kein `save()`-Aufruf → kein Write |
 | Bringt ihr eigenes Storage-Backend mit | Storage gehört zum Adapter: eigenes `StateStoreInterface` mitbringen oder `ArrayStore` / `CookieStore` nutzen |
