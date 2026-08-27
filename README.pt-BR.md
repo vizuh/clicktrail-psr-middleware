@@ -4,7 +4,9 @@
 
 **clicktrail/psr-middleware**
 
-Middleware PSR-15 para atribuição ClickTrail em qualquer framework PSR-7 (Slim, Mezzio, Laminas, custom) — first/last touch determinístico na request, nada gravado sem consentimento.
+Middleware PSR-15 que leva o contexto de aquisição observado para um atributo
+da requisição PSR-7. A persistência só ocorre quando o resolver de consentimento
+injetado permite.
 
 </div>
 
@@ -25,7 +27,10 @@ Middleware PSR-15 para atribuição ClickTrail em qualquer framework PSR-7 (Slim
 
 ## Por quê
 
-A maioria das middleware de atribuição captura UTMs num cookie e considera encerrado — sem lei de mesclagem, sem gate de consentimento, decisões de armazenamento embutidas no código. Este pacote roda o núcleo determinístico da ClickTrail dentro do seu stack PSR-15 e entrega aos seus handlers um `AttributionContext` imutável: touches mesclados, consentimento resolvido e uma trilha de auditoria de tudo que foi suprimido e por quê. Parte da expansão PHP/Twig da ClickTrail (polyrepo ADR-0001, layer 1).
+Use este pacote quando handlers PSR-15 precisarem do contexto de campanha
+observado na requisição recebida. Ele executa o núcleo determinístico do
+ClickTrail e anexa um `AttributionContext` imutável com toques mesclados,
+consentimento resolvido e motivos de supressão registrados.
 
 ## Instalação
 
@@ -60,20 +65,21 @@ $context->canPersist();       // true apenas quando o consentimento permitiu a g
 $context->suppressionReasons; // trilha de auditoria do que foi bloqueado e por quê
 ```
 
-Um hit de busca paga seguido de uma visita direta mantém `firstTouch()` intacto enquanto `lastTouch()` se move — essa é a lei de mesclagem do núcleo compartilhado, não opinião deste pacote. Sem concessão de consentimento, nenhuma gravação acontece.
+Um hit de busca paga seguido de uma visita direta mantém `firstTouch()` intacto enquanto `lastTouch()` se move; essa é a lei de mesclagem do núcleo compartilhado, não opinião deste pacote. Sem concessão de consentimento, nenhuma gravação acontece.
 
 ## Adaptadores de armazenamento
 
 A middleware nunca decide onde o estado vive. Implemente `StateStoreInterface` (sessão, banco, cache) ou use um dos embutidos:
 
-- **`ArrayStore`** — memória por request. Testes e workers stateless.
-- **`CookieStore`** — persistência via cookie, ex.: `new CookieStore('ct_attr')`.
+- **`ArrayStore`**; memória por request. Testes e workers stateless.
+- **`CookieStore`**; persistência via cookie, ex.: `new CookieStore('ct_attr')`.
 
-Se o `ConsentResolverInterface` injetado não devolver concessão, `StateStoreInterface::save()` nunca é chamado — sem cookie, sem entrada de sessão, nada.
+Se o `ConsentResolverInterface` injetado não devolver concessão, `StateStoreInterface::save()` nunca é chamado; sem cookie, sem entrada de sessão, nada.
 
 ## Consentimento
 
-Snapshot `null` significa *desconhecido*, negado por padrão conforme o [contrato de compatibilidade de consentimento](../docs/consent-compatibility-plan.md). Duas formas de ligar:
+Snapshot `null` significa *desconhecido*, negado por padrão conforme o
+[contrato de consentimento do SDK compartilhado](https://github.com/vizuh/clicktrail-php/tree/main/src/Consent). Duas formas de ligar:
 
 - Passe um `consentResolver` ao `CaptureAttributionMiddleware`; ele faz o gate de persistência diretamente.
 - Adicione `ConsentMiddleware` upstream; ele resolve o snapshot uma vez por request e o anexa sob seu próprio atributo (`clicktrail.consent`) para qualquer outra coisa downstream.
@@ -97,7 +103,7 @@ Os snapshots viajam com o lead, então meses depois o worker de conversão sabe 
 
 | Middleware de rastreamento típica | clicktrail/psr-middleware |
 |---|---|
-| Faz chamadas remotas durante o ciclo da request | Nenhuma chamada remota, nunca — a entrega de eventos pertence ao `clicktrail/php-sdk` |
+| Faz chamadas remotas durante o ciclo da request | Nenhuma chamada remota, nunca; a entrega de eventos pertence ao `clicktrail/php-sdk` |
 | Lê o relógio do sistema sozinha | Clock injetável que retorna timestamps ISO-8601 em milissegundos |
 | Grava cookies e depois pergunta sobre consentimento | Sem concessão → sem chamada a `save()` → sem gravação |
 | Traz seu próprio backend de armazenamento | O armazenamento pertence ao adapter: traga seu `StateStoreInterface`, ou use `ArrayStore` / `CookieStore` |
