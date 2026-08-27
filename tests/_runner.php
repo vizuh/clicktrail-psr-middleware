@@ -256,5 +256,22 @@ namespace {
     $withCookie = $cookieStore->applyToResponse(new TestResponse());
     check(str_contains($withCookie->getHeaderLine('Set-Cookie'), 'ct_test='), 'T4 cookie written after gated save');
 
-    fwrite(STDOUT, "ALL PASS (" . 4 . " scenarios)\n");
+    // T5 separate visitor stores and the current request URI define attribution.
+    // Cached response markup is outside this middleware input and cannot seed Visitor B.
+    $visitorAStore = new ArrayStore();
+    $visitorA = new CaptureAttributionMiddleware($visitorAStore, $resolver, fn (): string => $ts(6));
+    $visitorAHandler = new TestHandler();
+    $visitorA->process(new TestRequest('https://example.com/?gclid=visitor-a'), $visitorAHandler);
+    $visitorAContext = $visitorAHandler->captured->getAttribute(CaptureAttributionMiddleware::DEFAULT_ATTRIBUTE);
+    check(($visitorAContext->lastTouch()?->clickIds['gclid'] ?? '') === 'visitor-a', 'T5 Visitor A gclid captured');
+
+    $visitorBStore = new ArrayStore();
+    $visitorB = new CaptureAttributionMiddleware($visitorBStore, $resolver, fn (): string => $ts(7));
+    $visitorBHandler = new TestHandler();
+    $visitorB->process(new TestRequest('https://example.com/'), $visitorBHandler);
+    $visitorBContext = $visitorBHandler->captured->getAttribute(CaptureAttributionMiddleware::DEFAULT_ATTRIBUTE);
+    check($visitorBContext->firstTouch() === null && $visitorBContext->lastTouch() === null, 'T5 Visitor B attribution stays empty');
+    check(!str_contains((string) $visitorBStore->peek(), 'visitor-a'), 'T5 Visitor A data absent from Visitor B store');
+
+    fwrite(STDOUT, "ALL PASS (" . 5 . " scenarios)\n");
 }
