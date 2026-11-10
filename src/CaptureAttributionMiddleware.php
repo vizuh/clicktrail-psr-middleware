@@ -61,7 +61,7 @@ final class CaptureAttributionMiddleware implements MiddlewareInterface
             touchTimestamp: ($this->clock)(),
         );
 
-        $stored = StoredState::fromJson($this->store->load($request));
+        $stored = self::restore($this->store->load($request));
         $state = TouchMerger::observe($stored, $input);
 
         $snapshot = $this->consentResolver->resolve($request);
@@ -69,7 +69,11 @@ final class CaptureAttributionMiddleware implements MiddlewareInterface
         $persisted = false;
 
         if ($snapshot !== null && ConsentBehavior::can($snapshot, ConsentSnapshot::CAP_ANALYTICS)) {
-            $this->store->save($state->toJson());
+            // observe() returns $stored itself when there is no new signal:
+            // nothing changed, so no write.
+            if ($state !== $stored) {
+                $this->store->save($state->toJson());
+            }
             $persisted = true;
         } elseif ($snapshot === null) {
             $suppression[] = 'analytics_storage unknown at capture (source: none) - persistence blocked';
@@ -93,5 +97,47 @@ final class CaptureAttributionMiddleware implements MiddlewareInterface
         $response = $handler->handle($request->withAttribute($this->attribute, $context));
 
         return $this->store->applyToResponse($response);
+    }
+
+    /**
+     * Restore persisted state from untrusted input (e.g. a cookie). Anything
+     * oversized or malformed degrades to empty state instead of a 500.
+     */
+    private static function restore(?string $json): StoredState
+    {
+        // Browsers drop cookies over 4096 bytes, so no legitimate state is larger.
+        if ($json === null || strlen($json) > 4096) {
+            return StoredState::empty();
+        }
+        $data = json_decode($json, true, 8);
+        foreach (['first', 'last'] as $key) {
+            $clickIds = is_array($data) && is_array($data[$key] ?? null) ? ($data[$key]['click_ids'] ?? null) : null;
+            if ($clickIds === null) {
+                continue;
+            }
+            if (!is_array($clickIds)) {
+                return StoredState::empty();
+            }
+            foreach ($clickIds as $id => $value) {
+                if (!is_string($id) || !is_string($value)) {
+                    return StoredState::empty();
+                }
+            }
+        }
+        try {
+            // Touch's typed ?string properties reject every other non-string field.
+            $state = StoredState::fromJson($json);
+        } catch (\Throwable) {
+            return StoredState::empty();
+        }
+        // A touch with no known field set (JSON list, unknown keys only) is not a
+        // real touch; keeping it would let it displace the visitor's real first touch.
+        foreach ([$state->first, $state->last] as $touch) {
+            if ($touch !== null && array_filter($touch->toArray(), static fn ($v): bool => $v !== null) === []) {
+                return StoredState::empty();
+            }
+        }
+
+        return $state;
     }
 }
