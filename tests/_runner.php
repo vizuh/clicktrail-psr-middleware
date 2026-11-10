@@ -297,6 +297,8 @@ namespace {
         '{"first":{"source":"' . str_repeat('a', 5000) . '"}}',
         '{"first":"x"}',
         'not json',
+        '{"first":[1,2]}',
+        '{"first":{"x":"y"}}',
     ];
     foreach ($malformed as $i => $raw) {
         $h7 = new TestHandler();
@@ -305,6 +307,11 @@ namespace {
         check($ctx7->attribution->toJson() === StoredState::empty()->toJson(), "T7.$i malformed cookie degrades to empty state");
         check($ctCookies($r7) === [], "T7.$i no cookie rewrite for unchanged empty state");
     }
+    // A shape-malformed cookie must not displace the real first touch of the next paid visit.
+    $h7b = new TestHandler();
+    $cmw->process(new TestRequest($paid, ['X-Consent' => 'granted'], ['ct_attr' => rawurlencode('{"first":{"x":"y"}}')]), $h7b);
+    $ctx7b = $h7b->captured->getAttribute(CaptureAttributionMiddleware::DEFAULT_ATTRIBUTE);
+    check(($ctx7b->firstTouch()->clickIds['gclid'] ?? '') === 'C5', 'T7 malformed first touch replaced by real paid touch');
 
     // T8 returning visit with unchanged state: context restored, no redundant Set-Cookie
     $cookieValue = explode(';', substr($ctCookies($r5)[0], strlen('ct_attr=')), 2)[0];

@@ -126,9 +126,18 @@ final class CaptureAttributionMiddleware implements MiddlewareInterface
         }
         try {
             // Touch's typed ?string properties reject every other non-string field.
-            return StoredState::fromJson($json);
+            $state = StoredState::fromJson($json);
         } catch (\Throwable) {
             return StoredState::empty();
         }
+        // A touch with no known field set (JSON list, unknown keys only) is not a
+        // real touch; keeping it would let it displace the visitor's real first touch.
+        foreach ([$state->first, $state->last] as $touch) {
+            if ($touch !== null && array_filter($touch->toArray(), static fn ($v): bool => $v !== null) === []) {
+                return StoredState::empty();
+            }
+        }
+
+        return $state;
     }
 }
