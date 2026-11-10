@@ -27,6 +27,13 @@ final class CookieStore implements StateStoreInterface
 
     public function load(RequestInterface $request): ?string
     {
+        // load() starts each request cycle: drop anything a previous request
+        // left pending (e.g. its handler threw before applyToResponse()), so a
+        // shared instance never hands one visitor's state to the next.
+        // ponytail: state is per instance, so concurrent requests on one instance
+        // (coroutine servers) can still interleave; fixing that needs per-request
+        // state in StateStoreInterface.
+        $this->pending = null;
         if (!$request instanceof \Psr\Http\Message\ServerRequestInterface) {
             return null;
         }
@@ -42,11 +49,13 @@ final class CookieStore implements StateStoreInterface
 
     public function applyToResponse(ResponseInterface $response): ResponseInterface
     {
-        if ($this->pending === null) {
+        $pending = $this->pending;
+        $this->pending = null;
+        if ($pending === null) {
             return $response;
         }
         $parts = [
-            sprintf('%s=%s', $this->name, rawurlencode($this->pending)),
+            sprintf('%s=%s', $this->name, rawurlencode($pending)),
             sprintf('Max-Age=%d', $this->maxAgeSeconds),
             'Path=/',
             'HttpOnly',
@@ -56,6 +65,7 @@ final class CookieStore implements StateStoreInterface
             $parts[] = 'Secure';
         }
 
-        return $response->withHeader('Set-Cookie', implode('; ', $parts));
+        // Append: the application's own Set-Cookie headers must survive.
+        return $response->withAddedHeader('Set-Cookie', implode('; ', $parts));
     }
 }

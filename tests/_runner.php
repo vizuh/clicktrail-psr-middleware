@@ -145,17 +145,23 @@ namespace ClickTrail\Test {
         public function withoutAttribute(string $name): static { $c = clone $this; unset($c->attributes[$name]); return $c; }
     }
 
+    // Real PSR-7 header semantics: case-insensitive names, multi-value lists,
+    // withHeader() replaces, withAddedHeader() appends.
     class TestResponse implements \Psr\Http\Message\ResponseInterface {
-        public function __construct(private array $headers = [], private int $status = 200) { }
+        /** @var array<string, list<string>> lower-cased name => values */
+        private array $headers = [];
+        public function __construct(array $headers = [], private int $status = 200) {
+            foreach ($headers as $n => $v) { $this->headers[strtolower($n)] = array_map('strval', (array) $v); }
+        }
         public function getProtocolVersion(): string { return '1.1'; }
         public function withProtocolVersion(string $v): static { return $this; }
         public function getHeaders(): array { return $this->headers; }
-        public function hasHeader(string $n): bool { return isset($this->headers[$n]); }
-        public function getHeader(string $n): array { return [$this->getHeaderLine($n)]; }
-        public function getHeaderLine(string $n): string { return $this->headers[$n] ?? ''; }
-        public function withHeader(string $n, $v): static { $c = clone $this; $c->headers[$n] = (string)(is_array($v) ? reset($v) : $v); return $c; }
-        public function withAddedHeader(string $n, $v): static { return $this->withHeader($n, $v); }
-        public function withoutHeader(string $n): static { $c = clone $this; unset($c->headers[$n]); return $c; }
+        public function hasHeader(string $n): bool { return isset($this->headers[strtolower($n)]); }
+        public function getHeader(string $n): array { return $this->headers[strtolower($n)] ?? []; }
+        public function getHeaderLine(string $n): string { return implode(', ', $this->getHeader($n)); }
+        public function withHeader(string $n, $v): static { $c = clone $this; $c->headers[strtolower($n)] = array_map('strval', (array) $v); return $c; }
+        public function withAddedHeader(string $n, $v): static { $c = clone $this; $k = strtolower($n); $c->headers[$k] = [...($c->headers[$k] ?? []), ...array_map('strval', (array) $v)]; return $c; }
+        public function withoutHeader(string $n): static { $c = clone $this; unset($c->headers[strtolower($n)]); return $c; }
         public function getBody(): \Psr\Http\Message\StreamInterface { throw new \LogicException('not needed'); }
         public function withBody(\Psr\Http\Message\StreamInterface $b): static { return $this; }
         public function getStatusCode(): int { return $this->status; }
@@ -164,10 +170,11 @@ namespace ClickTrail\Test {
     }
 
     class TestHandler implements \Psr\Http\Server\RequestHandlerInterface {
-        public function __construct(public mixed $captured = null) { }
+        public function __construct(public mixed $captured = null, private array $responseHeaders = [], private bool $throw = false) { }
         public function handle(\Psr\Http\Message\ServerRequestInterface $request): \Psr\Http\Message\ResponseInterface {
             $this->captured = $request;
-            return new TestResponse();
+            if ($this->throw) { throw new \RuntimeException('handler failed'); }
+            return new TestResponse($this->responseHeaders);
         }
     }
 }
@@ -194,6 +201,7 @@ namespace {
 
     use ClickTrail\Consent\ConsentSnapshot;
     use ClickTrail\Consent\ConsentValue;
+    use ClickTrail\Core\StoredState;
     use ClickTrail\Middleware\ArrayStore;
     use ClickTrail\Middleware\CaptureAttributionMiddleware;
     use ClickTrail\Middleware\CookieStore;
@@ -231,13 +239,14 @@ namespace {
     check($ctx->suppressionReasons === [], 'T1 no suppression reasons');
 
     // T2 internal-referrer navigation is a no-op for state (no new touch)
+    $storedBeforeT2 = $store->peek();
     $req2 = new TestRequest('https://example.com/pricing', ['Referer' => 'https://example.com/menu']);
     $h2 = new TestHandler();
     $mw->process($req2, $h2);
     $ctx2 = $h2->captured->getAttribute(CaptureAttributionMiddleware::DEFAULT_ATTRIBUTE);
     check($ctx2->firstTouch()->touchTimestamp === $ctx->firstTouch()->touchTimestamp, 'T2 first untouched');
     check($ctx2->attribution->toJson() === $ctx->attribution->toJson(), 'T2 stored state unchanged');
-    check($store->peek() === $store->peek(), 'T2 store stable');
+    check($store->peek() === $storedBeforeT2, 'T2 store stable');
 
     // T3 unknown-consent blocks persistence entirely (null resolver)
     $store3 = new ArrayStore();
@@ -251,10 +260,59 @@ namespace {
 
     // T4 CookieStore writes Set-Cookie only when save() was gated through
     $cookieStore = new CookieStore(name: 'ct_test');
-    check($cookieStore->applyToResponse(new TestResponse()) instanceof TestResponse, 'T4 no pending cookie passthrough');
+    check(!$cookieStore->applyToResponse(new TestResponse())->hasHeader('Set-Cookie'), 'T4 no pending cookie passthrough');
     $cookieStore->save(json_encode(['first' => null, 'last' => null]));
     $withCookie = $cookieStore->applyToResponse(new TestResponse());
     check(str_contains($withCookie->getHeaderLine('Set-Cookie'), 'ct_test='), 'T4 cookie written after gated save');
 
-    fwrite(STDOUT, "ALL PASS (" . 4 . " scenarios)\n");
+    // Shared CookieStore middleware; consent is per request (X-Consent: granted).
+    $perRequest = new class($granted) implements ClickTrail\Middleware\ConsentResolverInterface {
+        public function __construct(private ConsentSnapshot $s) {}
+        public function resolve(\Psr\Http\Message\ServerRequestInterface $r): ?ConsentSnapshot {
+            return $r->getHeaderLine('X-Consent') === 'granted' ? $this->s : null;
+        }
+    };
+    $ctCookies = fn ($resp): array => array_values(array_filter($resp->getHeader('Set-Cookie'), fn (string $c): bool => str_starts_with($c, 'ct_attr=')));
+    $cmw = new CaptureAttributionMiddleware(new CookieStore(), $perRequest, fn (): string => $ts(10));
+    $paid = 'https://example.com/promo?utm_source=google&utm_medium=cpc&gclid=C5';
+
+    // T5 application Set-Cookie survives alongside ct_attr
+    $r5 = $cmw->process(new TestRequest($paid, ['X-Consent' => 'granted']), new TestHandler(null, ['Set-Cookie' => 'sid=1; Path=/']));
+    check(in_array('sid=1; Path=/', $r5->getHeader('Set-Cookie'), true), 'T5 app Set-Cookie preserved');
+    check(count($ctCookies($r5)) === 1, 'T5 ct_attr appended');
+
+    // T6 next (unconsented) request on the same instance gets no ct_attr: no cross-request leak
+    $r6 = $cmw->process(new TestRequest($paid), new TestHandler());
+    check($ctCookies($r6) === [], 'T6 no leaked ct_attr after applied request');
+    $h6 = new TestHandler(null, [], true);
+    try { $cmw->process(new TestRequest($paid, ['X-Consent' => 'granted']), $h6); check(false, 'T6 handler should throw'); } catch (\RuntimeException) {}
+    $r6b = $cmw->process(new TestRequest($paid), new TestHandler());
+    check($ctCookies($r6b) === [], 'T6 no leaked ct_attr after a request whose handler threw');
+
+    // T7 malformed/oversized ct_attr cookie -> no exception, empty state, nothing written
+    $malformed = [
+        '{"first":{"source":[]}}',
+        '{"last":{"source":1}}',
+        '{"last":{"click_ids":{"gclid":["x"]}}}',
+        '{"first":{"source":"' . str_repeat('a', 5000) . '"}}',
+        '{"first":"x"}',
+        'not json',
+    ];
+    foreach ($malformed as $i => $raw) {
+        $h7 = new TestHandler();
+        $r7 = $cmw->process(new TestRequest('https://example.com/', ['X-Consent' => 'granted'], ['ct_attr' => rawurlencode($raw)]), $h7);
+        $ctx7 = $h7->captured->getAttribute(CaptureAttributionMiddleware::DEFAULT_ATTRIBUTE);
+        check($ctx7->attribution->toJson() === StoredState::empty()->toJson(), "T7.$i malformed cookie degrades to empty state");
+        check($ctCookies($r7) === [], "T7.$i no cookie rewrite for unchanged empty state");
+    }
+
+    // T8 returning visit with unchanged state: context restored, no redundant Set-Cookie
+    $cookieValue = explode(';', substr($ctCookies($r5)[0], strlen('ct_attr=')), 2)[0];
+    $h8 = new TestHandler();
+    $r8 = $cmw->process(new TestRequest('https://example.com/pricing', ['X-Consent' => 'granted', 'Referer' => 'https://example.com/'], ['ct_attr' => $cookieValue]), $h8);
+    $ctx8 = $h8->captured->getAttribute(CaptureAttributionMiddleware::DEFAULT_ATTRIBUTE);
+    check(($ctx8->lastTouch()->clickIds['gclid'] ?? '') === 'C5', 'T8 state restored from cookie');
+    check($ctCookies($r8) === [], 'T8 unchanged state is not re-saved');
+
+    fwrite(STDOUT, "ALL PASS (" . 8 . " scenarios)\n");
 }
